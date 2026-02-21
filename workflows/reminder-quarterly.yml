@@ -1,0 +1,86 @@
+name: Quarterly Security Maintenance Reminder
+
+on:
+  schedule:
+    # 1st of Jan, Apr, Jul, Oct at 9am UTC
+    - cron: '0 9 1 1,4,7,10 *'
+  workflow_dispatch:
+    inputs:
+      assignee:
+        description: 'GitHub username to assign the issue to'
+        required: true
+        type: string
+
+jobs:
+  create-quarterly-issue:
+    name: Create Quarterly Maintenance Issue
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Check for existing open issue
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          QUARTER=$(date +"%B %Y")
+          TITLE="🔒 Quarterly Security Pipeline Maintenance — $QUARTER"
+          
+          # Check if issue already exists
+          EXISTING=$(gh issue list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --search "$TITLE" \
+            --json number \
+            --jq 'length')
+          
+          if [ "$EXISTING" -gt "0" ]; then
+            echo "Issue already exists for $QUARTER, skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "title=$TITLE" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create quarterly maintenance issue
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSIGNEE: ${{ github.event.inputs.assignee || 'danx86' }}
+        run: |
+          QUARTER=$(date +"%B %Y")
+          DUE=$(date -d '+14 days' +"%Y-%m-%d")
+
+          gh issue create \
+            --repo ${{ github.repository }} \
+            --title "${{ steps.check.outputs.title }}" \
+            --assignee "$ASSIGNEE" \
+            --body "## Quarterly Security Maintenance Checklist
+
+          **Due:** $DUE
+
+          See [SECURITY-MAINTENANCE.md](../blob/main/SECURITY-MAINTENANCE.md) for full guidance on each step.
+
+          ### Action Version Bumps
+          Check for major version updates and update in \`.github/workflows/reusable-security.yml\`:
+
+          - [ ] [actions/checkout](https://github.com/actions/checkout/releases)
+          - [ ] [actions/upload-artifact](https://github.com/actions/upload-artifact/releases)
+          - [ ] [actions/download-artifact](https://github.com/actions/download-artifact/releases)
+          - [ ] [actions/dependency-review-action](https://github.com/actions/dependency-review-action/releases)
+          - [ ] [github/codeql-action](https://github.com/github/codeql-action/releases)
+
+          ### API Key Rotation
+          - [ ] Go to [Anthropic Console](https://console.anthropic.com) and create a new API key
+          - [ ] Update \`ANTHROPIC_API_KEY\` in GitHub Organisation secrets
+          - [ ] Delete the old API key from Anthropic Console
+
+          ### False Positive Review
+          - [ ] Review Trivy findings across all repos — update \`.trivyignore\` where needed
+          - [ ] Review Gitleaks findings across all repos — update \`.gitleaks.toml\` where needed
+
+          ### New Repos
+          - [ ] Check if any new repos need the security pipeline caller workflow added
+
+          ---
+          *Auto-created by [reminder-quarterly.yml](../blob/main/.github/workflows/reminder-quarterly.yml)*"
