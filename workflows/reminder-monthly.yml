@@ -1,57 +1,4 @@
-name: Monthly Security Maintenance Reminder
-
-on:
-  schedule:
-    # 1st of every month at 9am UTC
-    - cron: '0 9 1 * *'
-  workflow_dispatch:
-    inputs:
-      assignee:
-        description: 'GitHub username to assign the issue to'
-        required: true
-        type: string
-
-jobs:
-  create-monthly-issue:
-    name: Create Monthly Maintenance Issue
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Check for existing open issue
-        id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          MONTH=$(date +"%B %Y")
-          TITLE="🔒 Monthly Security Pipeline Maintenance — $MONTH"
-          
-          # Check if issue already exists
-          EXISTING=$(gh issue list \
-            --repo ${{ github.repository }} \
-            --state open \
-            --search "$TITLE" \
-            --json number \
-            --jq 'length')
-          
-          if [ "$EXISTING" -gt "0" ]; then
-            echo "Issue already exists for $MONTH, skipping"
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "title=$TITLE" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create monthly maintenance issue
-        if: steps.check.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ASSIGNEE: ${{ github.event.inputs.assignee || 'danx86' }}
-        run: |
-          MONTH=$(date +"%B %Y")
-          DUE=$(date -d '+7 days' +"%Y-%m-%d")
-
-          gh issue create \
+gh issue create \
             --repo ${{ github.repository }} \
             --title "${{ steps.check.outputs.title }}" \
             --assignee "$ASSIGNEE" \
@@ -59,20 +6,18 @@ jobs:
 
           **Due:** $DUE
 
-          See [SECURITY-MAINTENANCE.md](../blob/main/SECURITY-MAINTENANCE.md) for full guidance on each step.
+          See [SECURITY-MAINTENANCE.md](../blob/main/SECURITY-MAINTENANCE.md) for full guidance.
 
-          ### Action SHA Pins
-          Check for updated commits and update SHAs in \`.github/workflows/reusable-security.yml\`:
-
-          - [ ] [gitleaks/gitleaks-action](https://github.com/gitleaks/gitleaks-action/commits/main) — update SHA if changed
-          - [ ] [aquasecurity/trivy-action](https://github.com/aquasecurity/trivy-action/commits/main) — update SHA if changed
+          ### Dependabot PRs
+          - [ ] Review and merge any open Dependabot PRs (check security scan passed on each)
+          - [ ] If no Dependabot PRs in over a week, manually check gitleaks and trivy SHAs
 
           ### Anthropic Model Check
-          - [ ] Check [Anthropic model deprecation notices](https://docs.anthropic.com/en/docs/resources/model-deprecations)
-          - [ ] Update model strings in caller workflows if any are deprecated
+          - [ ] Check [model deprecation notices](https://docs.anthropic.com/en/docs/resources/model-deprecations)
+          - [ ] Update model strings in caller workflows if needed
 
           ### False Positive Review
-          - [ ] Review any security scan false positives flagged this month
+          - [ ] Review security scan false positives flagged this month
           - [ ] Update \`.trivyignore\` or \`.gitleaks.toml\` in affected repos if needed
 
           ---
