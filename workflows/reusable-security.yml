@@ -1,0 +1,248 @@
+name: Reusable Security Scanning
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: 'CodeQL language to scan (e.g. python, javascript-typescript)'
+        required: true
+        type: string
+      model:
+        description: 'Anthropic model to use for analysis'
+        required: true
+        type: string
+      repo_context:
+        description: 'Brief description of the repo purpose for better analysis'
+        required: false
+        type: string
+        default: 'a software project'
+      run_codeql:
+        description: 'Run SAST CodeQL scan'
+        required: false
+        type: boolean
+        default: true
+      run_secrets:
+        description: 'Run secret scanning'
+        required: false
+        type: boolean
+        default: true
+      run_dependencies:
+        description: 'Run dependency scanning'
+        required: false
+        type: boolean
+        default: true
+      run_container:
+        description: 'Run container/filesystem scanning'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  codeql:
+    name: SAST - CodeQL
+    if: inputs.run_codeql == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      security-events: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ inputs.language }}
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+
+  secrets:
+    name: Secret Scanning
+    if: inputs.run_secrets == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@267a61b1b76e02b4ce2f41162f1a4771c7fdfa8c
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: Dependency Scanning
+    if: inputs.run_dependencies == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  container:
+    name: Container Scanning
+    if: inputs.run_container == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe
+        with:
+          scan-type: fs
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          output: trivy-results.txt
+      - name: Sanitize Trivy results
+        if: always()
+        run: |
+          if [ -f trivy-results.txt ]; then
+            cat trivy-results.txt | head -100 | tr -cd '[:print:]\n' > trivy-sanitized.txt
+          else
+            echo "No results file found" > trivy-sanitized.txt
+          fi
+      - name: Upload Trivy results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-sanitized.txt
+          retention-days: 7
+
+  claude-analysis:
+    name: Claude Security Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [codeql, secrets, dependencies, container]
+    if: |
+      always() && (
+        needs.codeql.result == 'failure' ||
+        needs.secrets.result == 'failure' ||
+        needs.dependencies.result == 'failure' ||
+        needs.container.result == 'failure'
+      )
+    permissions:
+      pull-requests: write
+    env:
+      # Assign inputs to env vars to prevent shell injection
+      REPO_CONTEXT: ${{ inputs.repo_context }}
+      CLAUDE_MODEL: ${{ inputs.model }}
+    steps:
+      - name: Download Trivy results
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-results
+        continue-on-error: true
+
+      - name: Build scan summary file
+        run: |
+          {
+            echo "Repository context: $REPO_CONTEXT"
+            echo ""
+            echo "Failed scans:"
+
+            if [ "${{ needs.codeql.result }}" == "failure" ]; then
+              echo "- SAST (CodeQL) scan failed"
+            fi
+            if [ "${{ needs.secrets.result }}" == "failure" ]; then
+              echo "- Secret scanning failed - possible credentials exposed"
+            fi
+            if [ "${{ needs.dependencies.result }}" == "failure" ]; then
+              echo "- Dependency scan failed - vulnerable packages detected"
+            fi
+            if [ "${{ needs.container.result }}" == "failure" ]; then
+              echo "- Container/filesystem scan failed"
+              if [ -f trivy-sanitized.txt ]; then
+                echo ""
+                echo "Trivy details:"
+                cat trivy-sanitized.txt
+              fi
+            fi
+          } > scan-summary.txt
+
+      - name: Call Claude API
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Validate API key is set
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY secret is not set" > claude-comment.txt
+            exit 0
+          fi
+
+          # Build prompt using files only - no inline interpolation
+          {
+            echo "You are a security expert reviewing GitHub Actions scan results for: $REPO_CONTEXT"
+            echo "The following security scans failed on a pull request:"
+            echo ""
+            cat scan-summary.txt
+            echo ""
+            echo "Please:"
+            echo "1. Explain what each failure means in plain English"
+            echo "2. Provide specific steps to fix each issue"
+            echo "3. Indicate severity (Critical/High/Medium/Low) for each finding"
+          } > prompt.txt
+
+          # Build JSON safely using jq with rawfile
+          PAYLOAD=$(jq -n \
+            --arg model "$CLAUDE_MODEL" \
+            --rawfile content prompt.txt \
+            '{
+              model: $model,
+              max_tokens: 2048,
+              messages: [{role: "user", content: $content}]
+            }')
+
+          # Call API and capture HTTP status separately
+          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
+            https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "$PAYLOAD")
+
+          if [ "$HTTP_STATUS" == "200" ]; then
+            jq -r '.content[0].text' response.json > claude-comment.txt
+          elif [ "$HTTP_STATUS" == "401" ]; then
+            echo "Claude API authentication failed - please check your ANTHROPIC_API_KEY secret" > claude-comment.txt
+          elif [ "$HTTP_STATUS" == "429" ]; then
+            echo "Claude API rate limit hit - please review scan results manually" > claude-comment.txt
+          else
+            echo "Claude API returned status $HTTP_STATUS - please review scan results manually" > claude-comment.txt
+          fi
+
+      - name: Post PR comment
+        if: github.event.pull_request.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+
+          {
+            echo "## 🔒 Security Scan Analysis — $TIMESTAMP"
+            echo ""
+            echo "### Scan Results Summary"
+            cat scan-summary.txt
+            echo ""
+            echo "### Claude Analysis"
+            cat claude-comment.txt
+          } > pr-comment.txt
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body-file pr-comment.txt
+
+      - name: Fallback - Upload analysis if no PR
+        if: github.event.pull_request.number == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-analysis
+          path: pr-comment.txt
+          retention-days: 7
