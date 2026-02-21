@@ -1,0 +1,20 @@
+# Dependabot configuration
+# Automatically opens PRs to keep GitHub Actions up to date
+# This reduces manual SHA pin maintenance tracked in SECURITY-MAINTENANCE.md
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    open-pull-requests-limit: 10
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/London"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
