@@ -150,7 +150,7 @@ jobs:
           fi
       - name: Upload Trivy results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: trivy-results
           path: trivy-sanitized.txt
@@ -294,7 +294,7 @@ jobs:
 
       - name: Fallback - Upload analysis if no PR
         if: ${{ !github.event.pull_request.number }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: security-analysis
           path: pr-comment.txt
