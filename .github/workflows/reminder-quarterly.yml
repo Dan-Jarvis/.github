@@ -11,6 +11,8 @@ on:
         required: true
         type: string
 
+permissions: {}
+
 jobs:
   create-quarterly-issue:
     name: Create Quarterly Maintenance Issue
@@ -22,18 +24,19 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           QUARTER=$(date +"%B %Y")
           TITLE="🔒 Quarterly Security Pipeline Maintenance — $QUARTER"
-          
+
           # Check if issue already exists
           EXISTING=$(gh issue list \
-            --repo ${{ github.repository }} \
+            --repo "$GH_REPO" \
             --state open \
             --search "$TITLE" \
             --json number \
             --jq 'length')
-          
+
           if [ "$EXISTING" -gt "0" ]; then
             echo "Issue already exists for $QUARTER, skipping"
             echo "skip=true" >> $GITHUB_OUTPUT
@@ -46,14 +49,16 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           ASSIGNEE: ${{ github.event.inputs.assignee || 'danx86' }}
+          ISSUE_TITLE: ${{ steps.check.outputs.title }}
         run: |
           QUARTER=$(date +"%B %Y")
           DUE=$(date -d '+14 days' +"%Y-%m-%d")
 
           gh issue create \
-            --repo ${{ github.repository }} \
-            --title "${{ steps.check.outputs.title }}" \
+            --repo "$GH_REPO" \
+            --title "$ISSUE_TITLE" \
             --assignee "$ASSIGNEE" \
             --body "## Quarterly Security Maintenance Checklist
 
@@ -61,14 +66,24 @@ jobs:
 
           See [SECURITY-MAINTENANCE.md](../blob/main/SECURITY-MAINTENANCE.md) for full guidance on each step.
 
+          ### Harden Runner Egress Review
+          - [ ] Check StepSecurity dashboard for unexpected outbound calls across repos
+          - [ ] For jobs with stable egress patterns, switch from \`egress-policy: audit\` to \`egress-policy: block\` with explicit \`allowed-endpoints\`
+
           ### Action Version Bumps
-          Check for major version updates and update in \`.github/workflows/reusable-security.yml\`:
+          Check for major version updates (Dependabot handles patch/minor):
 
           - [ ] [actions/checkout](https://github.com/actions/checkout/releases)
           - [ ] [actions/upload-artifact](https://github.com/actions/upload-artifact/releases)
           - [ ] [actions/download-artifact](https://github.com/actions/download-artifact/releases)
           - [ ] [actions/dependency-review-action](https://github.com/actions/dependency-review-action/releases)
           - [ ] [github/codeql-action](https://github.com/github/codeql-action/releases)
+          - [ ] [step-security/harden-runner](https://github.com/step-security/harden-runner/releases)
+          - [ ] [ossf/scorecard-action](https://github.com/ossf/scorecard-action/releases)
+
+          ### Anthropic Model Check
+          - [ ] Check [model deprecation notices](https://docs.anthropic.com/en/docs/resources/model-deprecations)
+          - [ ] Update model strings in caller workflows if needed
 
           ### API Key Rotation
           - [ ] Go to [Anthropic Console](https://console.anthropic.com) and create a new API key
@@ -78,6 +93,9 @@ jobs:
           ### False Positive Review
           - [ ] Review Trivy findings across all repos — update \`.trivyignore\` where needed
           - [ ] Review Gitleaks findings across all repos — update \`.gitleaks.toml\` where needed
+
+          ### Scorecard Sync
+          - [ ] If \`scorecard.yml\` was updated in \`.github\` repo, propagate to all consumer repos
 
           ### New Repos
           - [ ] Check if any new repos need the security pipeline caller workflow added
