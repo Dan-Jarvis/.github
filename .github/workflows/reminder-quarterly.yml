@@ -50,7 +50,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          ASSIGNEE: ${{ github.event.inputs.assignee || 'danx86' }}
+          ASSIGNEE: ${{ github.event.inputs.assignee || 'dan-jarvis' }}
           ISSUE_TITLE: ${{ steps.check.outputs.title }}
         run: |
           QUARTER=$(date +"%B %Y")
